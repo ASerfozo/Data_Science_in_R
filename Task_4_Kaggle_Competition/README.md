@@ -7,4 +7,6 @@ In the folder there are 4 subfolders.
 - In the docs folder the report is located in html.
 - In the output folder the outputs of the models are located.
 
+This project is a University class based kaggle competition building Linear and Penalized models, Gradient Boosting Machine, XGBoost and Neural network models for prediction.
+
 Link to github repo of project: https://github.com/ASerfozo/Data_Science_in_R/tree/main/Task_4_Kaggle_Competition

@@ -6,4 +6,9 @@ In the folder there are 3 subfolders.
 - In the docs folder the report is located in html.
 - In the output folder the outputs of the models are located.
 
+The project includes
+- Tree ensemble models building and tuning
+- Variable importance profiles
+- Stacking
+
 Link to github repo of project: https://github.com/ASerfozo/Data_Science_in_R/tree/main/Task_2_Machine_learning_algorithms

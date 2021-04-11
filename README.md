@@ -16,4 +16,4 @@ There are four main folders in this repository.
 
 - Task 3 Image Recognition is a neural network exercise including building and tuning of network architectures and convolutional neural network 
 
-- Task 4 Kaggle Competition is a University class based kaggle competition building linear, Gradien Boosting, XGBoost and Neural network models for prediction
+- Task 4 Kaggle Competition is a University class based kaggle competition building Linear and Penalized models, Gradient Boosting Machine, XGBoost and Neural network models for prediction.
