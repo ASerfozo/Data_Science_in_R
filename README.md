@@ -9,8 +9,11 @@ There are four main folders in this repository.
 	- Clustering exercise
 	- PCA of high-dimensional data
 
-- Task 2 Machine Learning algorithms
+- Task 2 Machine Learning algorithms include 3 exercises
+	- Tree ensemble models
+	- Variable importance profiles
+	- Stacking
 
-- Task 3 
+- Task 3 Image Recognition is a neural network exercise including building and tuning of network architectures and convolutional neural network 
 
-- Task 4 
+- Task 4 Kaggle Competition is a University class based kaggle competition building linear, Gradien Boosting, XGBoost and Neural network models for prediction
