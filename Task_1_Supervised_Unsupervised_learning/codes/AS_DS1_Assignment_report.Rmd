@@ -1,0 +1,612 @@
+---
+title: "Data Science 1 - Assignment"
+author: "Attila Serfozo"
+date: '2021-02-22 '
+output:
+  html_document:
+    df_print: paged
+  prettydoc::html_pretty:
+    theme: cayman
+---
+
+```{r setup, include=FALSE, message = F, warning = F, echo = TRUE}
+
+# Set up environment ------------------------------------------------------
+
+rm(list=ls())
+library(prettydoc)
+
+# Import libraries
+library(tidyverse)
+library(datasets)
+library(MASS)
+library(ISLR)
+library(caret)
+library(Hmisc)
+library(GGally)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+
+# Import data
+data <- readRDS(url('http://www.jaredlander.com/data/manhattan_Train.rds')) %>%
+  mutate(logTotalValue = log(TotalValue)) %>%
+  drop_na()
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Supervised learning with penalized models and PCA
+In this exercise  our goal is to build a log property value prediction model from the Manhattan property values dataset downloaded from the book R for Everyone by Jared Lander.
+
+### a. Do a short exploration of data and find possible predictors of the target variable.
+
+In the imported dataset we start with 31 746 observations and 47 variables. First let's have a look at the target variable. The property value variable is skewed with a long right tail, therefore the logarithmic form of it is more suitable for an analysis as it takes a closer to normal distribution.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, out.width = '50%', fig.height=4}
+
+# Check level property values
+# Skewed with a long right tail
+plot_value <- ggplot(data = data, aes (x = TotalValue/1000000)) +
+  geom_histogram(color = "black", fill = "cyan4")+
+  labs(title="Distribution of property values", x = "Property value (in million USD)", y = "Frequency") +
+  theme_bw() 
+plot_value
+
+# Check log property values
+# It takes a closer to normal distribution
+plot_lnvalue <- ggplot(data = data, aes (x = logTotalValue)) +
+  geom_histogram(color = "black", fill = "cyan4")+
+  labs(title="Distribution of log property values", x = "Log Property value (in million USD)", y = "Frequency") +
+  theme_bw() 
+plot_lnvalue
+```
+
+By looking at the distribution of the numerical variables below we can see that most of the numerical predictors are skewed with a long right tail due to some extreme values, which are usually large commercial buildings with huge area. As a result I decided to transform them into logarithmic form as they will take a closer to normal distribution which will help our analysis. I also flagged observations with 0 values before log transformation.
+
+I decided to took the log of the following variables: BldgArea, BldgDepth, BldgFront, BuiltFAR, ComArea, FactryArea, GarageArea, LotArea, LotDepth, LotFront, NumBldgs, NumFloors, OfficeArea, OtherArea, ResArea, RetailArea, StrgeArea, UnitsRes, UnitsTotal.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, fig.width=10, fig.height=7, cache=TRUE}
+
+# Zone 2-3-4 variables have too many missing values and therefore have zero variances
+# describe(data$ZoneDist1)
+# describe(data$ZoneDist2)
+# describe(data$ZoneDist3)
+# describe(data$ZoneDist4)
+
+data <- data %>% dplyr::select(-c(ZoneDist2, ZoneDist3, ZoneDist4))
+# describe(data$TotalValue)
+
+# Quick check on all numeric features
+data %>%
+  keep(is.numeric) %>% 
+  gather() %>% 
+  ggplot(aes(value)) +
+  facet_wrap(~key, scales = "free") +
+  geom_histogram(fill='cyan4', col="black", alpha=0.7)+
+  theme_bw()+
+  labs(x="Variable", y="Absolute frequency", title="Distribution of variables")
+
+# Create log of skewed variables: 
+data <- data %>% mutate(logBldgArea = ifelse(BldgArea == 0 , 0, log(BldgArea)), 
+                        logBldgDepth = ifelse(BldgDepth == 0 , 0, log(BldgDepth)), 
+                        logBldgFront = ifelse(BldgFront == 0 , 0, log(BldgFront)), 
+                        logBuiltFAR = ifelse(BuiltFAR == 0 , 0, log(BuiltFAR)), 
+                        logComArea = ifelse(ComArea == 0 , 0, log(ComArea)), 
+                        logFactryArea = ifelse(FactryArea == 0 , 0, log(FactryArea)), 
+                        logGarageArea = ifelse(GarageArea == 0 , 0, log(GarageArea)), 
+                        logLotArea = ifelse(LotArea == 0 , 0, log(LotArea)), 
+                        logLotDepth = ifelse(LotDepth == 0 , 0, log(LotDepth)), 
+                        logLotFront = ifelse(LotFront == 0 , 0, log(LotFront)), 
+                        logNumBldgs = ifelse(NumBldgs == 0 , 0, log(NumBldgs)), 
+                        logNumFloors = ifelse(NumFloors == 0 , 0, log(NumFloors)), 
+                        logOfficeArea = ifelse(OfficeArea == 0 , 0, log(OfficeArea)), 
+                        logOtherArea = ifelse(OtherArea == 0 , 0, log(OtherArea)),
+                        logResArea = ifelse(ResArea == 0 , 0, log(ResArea)),
+                        logRetailArea = ifelse(RetailArea == 0 , 0, log(RetailArea)),
+                        logStrgeArea = ifelse(StrgeArea == 0 , 0, log(StrgeArea)),
+                        logUnitsRes = ifelse(UnitsRes == 0 , 0, log(UnitsRes)),
+                        logUnitsTotal = ifelse(UnitsTotal == 0 , 0, log(UnitsTotal)),)
+
+# indicate with a flag is log value is replaced with 0 in case of -Inf 
+data <- data %>% mutate(flag_logBldgArea = factor(ifelse(BldgArea == 0 , 1, 0)),
+                        flag_logBldgDepth = factor(ifelse(BldgDepth == 0 , 1, 0)),
+                        flag_logBldgFront = factor(ifelse(BldgFront == 0 , 1, 0)),
+                        flag_logBuiltFAR = factor(ifelse(BuiltFAR == 0 , 1, 0)),
+                        flag_logComArea = factor(ifelse(ComArea == 0 , 1, 0)),
+                        flag_logFactryArea = factor(ifelse(FactryArea == 0 , 1, 0)),
+                        flag_logGarageArea = factor(ifelse(GarageArea == 0 , 1, 0)),
+                        flag_logLotArea = factor(ifelse(LotArea == 0 , 1, 0)),
+                        flag_logLotDepth = factor(ifelse(LotDepth == 0 , 1, 0)),
+                        flag_logLotFront = factor(ifelse(LotFront == 0 , 1, 0)),
+                        flag_logNumBldgs = factor(ifelse(NumBldgs == 0 , 1, 0)),
+                        flag_logNumFloors = factor(ifelse(NumFloors == 0 , 1, 0)),
+                        flag_logOfficeArea = factor(ifelse(OfficeArea == 0 , 1, 0)),
+                        flag_logOtherArea = factor(ifelse(OtherArea == 0 , 1, 0)),
+                        flag_logResArea = factor(ifelse(ResArea == 0 , 1, 0)),
+                        flag_logRetailArea = factor(ifelse(RetailArea == 0 , 1, 0)),
+                        flag_logStrgeArea = factor(ifelse(StrgeArea == 0 , 1, 0)),
+                        flag_logUnitsRes = factor(ifelse(UnitsRes == 0 , 1, 0)),
+                        flag_logUnitsTotal = factor(ifelse(UnitsTotal == 0 , 1, 0)))
+
+# Drop level observations
+data <- data %>% dplyr::select(-c(BldgArea, BldgDepth, BldgFront, BuiltFAR, ComArea, FactryArea, GarageArea, LotArea, LotDepth, LotFront, NumBldgs, NumFloors, OfficeArea, OtherArea, ResArea, RetailArea, StrgeArea, UnitsRes, UnitsTotal))
+
+# Pish logTotalValue to the end of the data frame for ggcorr
+data <- data %>% dplyr::select(-logTotalValue, logTotalValue)
+```
+
+After transforming all necessary predictors to logarithmic form finally I had a look at the correlation matrix to see what are the main predictors. Based on the results below I selected logTotalValue, logUnitsTotal, logNumFloors, logLotFront, logLotArea, logComArea, logBuiltFAR, logBldgArea as key predictors.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, fig.width=6, fig.height=6, fig.align='center', cache=TRUE}
+ggcorr(data) +
+  labs(title = "Correlation Matrix")
+
+key_predictors <- c("logTotalValue", "logUnitsTotal", "logNumFloors", "logLotFront", "logLotArea", "logComArea", "logBuiltFAR", "logBldgArea")
+
+ggpairs(data, columns = c("logTotalValue", "logUnitsTotal", "logNumFloors", "logLotFront", "logLotArea"))
+```
+
+### b. Create a training and a test set, assigning 30% of observations to the training set.
+
+Before starting to build models I divide the data set to a training and a test set. For this I randomly selected 30% of the observations to the training set and I will use the train data with 10-fold cross validation to test my models. The holdout set will be used for model evaluation only.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE}
+
+# Create training and test set
+set.seed(1234)
+training_ratio <- 0.3
+train_indices <- createDataPartition(
+  y = data[["logTotalValue"]],
+  times = 1,
+  p = training_ratio,
+  list = FALSE
+) %>% as.vector()
+data_train <- data[train_indices, ]
+data_test <- data[-train_indices, ]
+fit_control <- trainControl(method = "cv", number = 10) #, selectionFunction = "oneSE")
+
+```
+
+### c. Use a linear regression to predict logTotalValue and use 10-fold cross validation to assess the predictive power.
+
+After creating the test and holdout set I run a linear regression model to test our data set with a 10-fold cross-validation and have a look at its predicting power. Using all the predictors the linear model resulted an RMSE of 0.551 log value in USD and an R-squared of 87.6%.  
+
+```{r message = FALSE, warning = FALSE, echo = TRUE}
+
+set.seed(1234)
+linear_reg <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "lm",
+  trControl = fit_control
+)
+#linear_reg
+# RMSE 0.551, R-squared 0.876, MAE 0.419
+
+```
+
+### d. Use penalized linear models for the same task. Make sure to try LASSO, Ridge and Elastic Net models. Does the best model improve on the simple linear model?
+  
+#### Ridge
+
+My first model is a ridge regression, which adds a penalty term to the sum of squared residuals (the sum of squares
+of the regression coefficients). It is running with 10-fold cross-validation using the caret package. The model calculates the optimal lambda for us by taking into account the different RMSE values. Based on the results of ridge estimation the optimal lambda is 0.1.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, out.width = '50%', fig.height=4, fig.align='center', cache=TRUE}
+
+ridge_tune_grid <- expand.grid(
+  "alpha" = c(0),
+  "lambda" = seq(0.05, 0.5, by = 0.025)
+)
+
+set.seed(1234)
+ridge_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale"),
+  tuneGrid = ridge_tune_grid,
+  trControl = fit_control
+)
+#ridge_fit
+
+ggplot(ridge_fit) +
+  geom_line(color="cyan4") +
+  geom_point(color="cyan4")
+# The optimal value based on RMSE is lambda 0.1
+
+```
+
+#### LASSO
+
+My second model is a LASSO doing the same as the ridge model, just with the sum of the absolute values of the coefficients instead of the sum of squares of the regression coefficients. Based on the LASSO results the optimal lambda is 0.0001.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, out.width = '50%', fig.height=4, fig.align='center', cache=TRUE}
+
+tenpowers <- 10^seq(-1, -5, by = -1)
+
+lasso_tune_grid <- expand.grid(
+  "alpha" = c(1),
+  "lambda" = c(tenpowers, tenpowers / 2) 
+)
+
+set.seed(1234)
+lasso_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale"),
+  tuneGrid = lasso_tune_grid,
+  trControl = fit_control
+)
+
+#lasso_fit
+
+ggplot(lasso_fit) +
+  geom_line(color="cyan4") +
+  geom_point(color="cyan4") +
+  theme_bw()
+# The optimal value based on RMSE is lambda 0.0001
+
+```
+
+#### Elastic Net
+
+The third model is an Elastic Net regression combining both types of penalties. LASSO is attractive since it performs principled variable selection. However, when having correlated features, typically only one of them - quite arbitrarily - is kept in the model. Ridge simultaneously shrinks coefficients of these towards zero. If we apply penalties of both the absolute values and the squares of the coefficients, both virtues are retained. Based on the results of the Elastic Net estimation the optimal lambda is 0.0001.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, cache=TRUE}
+
+enet_tune_grid <- expand.grid(
+  "alpha" = seq(0, 1, by = 0.1),
+  "lambda" = union(lasso_tune_grid[["lambda"]], ridge_tune_grid[["lambda"]])
+)
+
+set.seed(1234)
+enet_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale"),
+  tuneGrid = enet_tune_grid,
+  trControl = fit_control
+)
+
+#enet_fit
+# The optimal value based on RMSE is lambda 0.0001
+
+ggplot(enet_fit) + scale_x_log10() +
+  theme_bw()
+
+```
+
+#### Model results
+
+So we ran four different models, a linear, a ridge, a LASSO and an Elastic Net. Below we can see the RMSE results of the models. We can see that the Ridge, LASSO and Elastic Net could not improve the result of the simple linear regression.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE}
+
+models <-
+  list("Linear"= linear_reg,
+       "Ridge" = ridge_fit,
+       "LASSO" = lasso_fit,
+       "Elastic Net" = enet_fit)
+
+results <- resamples(models) %>% summary()
+
+result_2 <- imap(models, ~{
+  mean(results$values[[paste0(.y,"~RMSE")]])
+}) %>% unlist() %>% as.data.frame() %>%
+  rename("CV RMSE" = ".")
+#result_2
+
+knitr::kable(result_2,caption="Models RMSE")
+
+```
+
+### e. Which of the models you’ve trained is the “simplest one that is still good enough”?
+
+As mentioned earlier the best model performance was the prediction power of the simple linear regression. Even if we are trying to add ht oneSE parameter to the train control it stays the best, what is more it even widens the gap between the simple linear and the other models.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, cache=TRUE}
+
+fit_control <- trainControl(method = "cv", number = 10, selectionFunction = "oneSE")
+
+# Linear
+set.seed(1234)
+linear_reg <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "lm",
+  trControl = fit_control
+)
+
+# Ridge
+
+ridge_tune_grid <- expand.grid(
+  "alpha" = c(0),
+  "lambda" = seq(0.05, 0.5, by = 0.025)
+)
+
+set.seed(1234)
+ridge_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale"),
+  tuneGrid = ridge_tune_grid,
+  trControl = fit_control
+)
+
+# LASSO
+
+tenpowers <- 10^seq(-1, -5, by = -1)
+
+lasso_tune_grid <- expand.grid(
+  "alpha" = c(1),
+  "lambda" = c(tenpowers, tenpowers / 2) 
+)
+
+set.seed(1234)
+lasso_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale"),
+  tuneGrid = lasso_tune_grid,
+  trControl = fit_control
+)
+
+# Elastic Net
+
+enet_tune_grid <- expand.grid(
+  "alpha" = seq(0, 1, by = 0.1),
+  "lambda" = union(lasso_tune_grid[["lambda"]], ridge_tune_grid[["lambda"]])
+)
+
+set.seed(1234)
+enet_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale"),
+  tuneGrid = enet_tune_grid,
+  trControl = fit_control
+)
+
+models <-
+  list("Linear"= linear_reg,
+       "Ridge" = ridge_fit,
+       "LASSO" = lasso_fit,
+       "Elastic Net" = enet_fit)
+
+results3 <- resamples(models) %>% summary()
+
+result_4 <- imap(models, ~{
+  mean(results3$values[[paste0(.y,"~RMSE")]])
+}) %>% unlist() %>% as.data.frame() %>%
+  rename("CV RMSE" = ".")
+
+knitr::kable(result_4,caption="Models RMSE")
+
+```
+
+### f. Now try to improve the linear model by using PCA for dimensionality reduction. Does PCA improve the fit over the simple linear model?
+
+After running our models, we try to improve the linear model by using Principal Component Analysis (PCA) on the predictor variables. The optimal number of components used for the model was 124.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, cache=TRUE}
+
+tune_grid <- data.frame(ncomp = 80:130)
+set.seed(1234)
+pcr_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "pcr",
+  trControl = trainControl(method = "cv", number = 10),
+  tuneGrid = tune_grid,
+  preProcess = c("center", "scale")
+)
+#pcr_fit
+# Final value used for the model was ncomp = 124
+
+```
+
+### g. If you apply PCA prior to estimating penalized models via preProcess, does it help to achieve a better fit? (Hint: also include "nzv" to preProcess to drop zero variance features). What is your intuition why this can be the case?
+
+Next, we are applying PCA prior to estimating penalized models via preProcess. As we can see below in the results table, the penalized models still can not surpass the results of the simple linear model.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, cache=TRUE}
+
+# Ridge
+
+ridge_tune_grid <- expand.grid(
+  "alpha" = c(0),
+  "lambda" = seq(0.05, 0.5, by = 0.025)
+)
+
+set.seed(1234)
+ridge_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "nzv", "pca"),
+  tuneGrid = ridge_tune_grid,
+  trControl = trainControl(method = "cv", number = 10, preProcOptions = list(pcaComp = 124))
+)
+
+# LASSO
+
+lasso_tune_grid <- expand.grid(
+  "alpha" = c(1),
+  "lambda" = c(tenpowers, tenpowers / 2) 
+)
+
+set.seed(1234)
+lasso_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "nzv", "pca"),
+  tuneGrid = lasso_tune_grid,
+  trControl = trainControl(method = "cv", number = 10, preProcOptions = list(pcaComp = 124))
+)
+
+# Elastic Net
+
+enet_tune_grid <- expand.grid(
+  "alpha" = seq(0, 1, by = 0.1),
+  "lambda" = union(lasso_tune_grid[["lambda"]], ridge_tune_grid[["lambda"]])
+)
+
+set.seed(1234)
+enet_fit <- train(
+  logTotalValue ~ . -TotalValue,
+  data = data_train,
+  method = "glmnet",
+  preProcess = c("center", "scale", "nzv", "pca"),
+  tuneGrid = enet_tune_grid,
+  trControl = trainControl(method = "cv", number = 10, preProcOptions = list(pcaComp = 124))
+)
+
+models <-
+  list("Linear"= linear_reg,
+       "Ridge" = ridge_fit,
+       "LASSO" = lasso_fit,
+       "Elastic Net" = enet_fit)
+
+results5 <- resamples(models) %>% summary()
+
+result_6 <- imap(models, ~{
+  mean(results5$values[[paste0(.y,"~RMSE")]])
+}) %>% unlist() %>% as.data.frame() %>%
+  rename("CV RMSE" = ".")
+
+knitr::kable(result_6,caption="Models RMSE")
+
+```
+
+### h. Select the best model of those you’ve trained. Evaluate your preferred model on the test set.
+
+Finally I select the simple linear model as the choosen model, because that performed the best in all cases. Evaluating on the test set it resulted an RMSE of 0.552 USD log value, which is relatively close to the training sample RMSE.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE}
+
+results7 <- map(models, ~{
+  RMSE(predict(.x, newdata = data_test), data_test[["logTotalValue"]])
+}) %>% unlist() %>% as.data.frame() %>%
+  rename("Holdout RMSE" = ".")
+
+```
+
+
+# 2. Clustering on the USArrests dataset
+
+In this second exercise we are using the US Arrests dataset including different crime data to create clustering.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE}
+
+library(tidyverse)
+library(caret)
+library(skimr)
+library(janitor)
+library(factoextra)
+library(NbClust)
+library(knitr)
+library(kableExtra)
+
+# Import data
+data <- USArrests
+ggpairs(data, title = "USArrests correlation matrix and densities")
+
+```
+
+#### a. Think about any data pre-processing steps you may/should want to do before applying clustering methods. 
+
+Looking at the distribution of variables I decided I will not make any log transformations as the distribution of variables are not too skewed and I did not spot extreme values. The distribution of variables can be found below.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, cache=TRUE}
+
+data %>%
+  keep(is.numeric) %>% 
+  gather() %>% 
+  ggplot(aes(value)) +
+  facet_wrap(~key, scales = "free") +
+  geom_histogram(fill='cyan4', col="black", alpha=0.7)+
+  theme_bw()+
+  labs(x="Variable", y="Absolute frequency", title="Distribution of variables")
+
+```  
+
+#### b. Determine the optimal number of clusters as indicated by NbClust heuristics.
+
+First I started to have a look at the optimal number of clusters, according to the chart below we have the elbow point around 2 or 3.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, cache=TRUE}
+
+# Check number of clusters
+fviz_nbclust(data, kmeans, method = "wss")
+
+```
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, results="hide", cache=TRUE}
+
+nb <- NbClust(data, method = "kmeans", min.nc = 2, max.nc = 10, index = "all")
+
+```
+
+#### c. Use the k-means method to cluster states using the number of clusters found in a) and anything else that you think that makes sense.
+
+After estimating the optimal number of clusters I create the plot of observations based on cluster colors. I will use 2 clusters for plotting the urban populations and assaults. We can see that the observations are spreading wide around the center points thus they have a large variance.
+
+```{r message = FALSE, warning = FALSE, echo = TRUE, cache=TRUE}
+
+# Plot clustering
+
+plot_clusters_with_centers <- function(features, kmeans_object) {
+  
+  data_w_clusters <- mutate(features, cluster = factor(kmeans_object$cluster))
+  
+  centers <- as_tibble(kmeans_object$centers) %>%
+    mutate(cluster = factor(seq(nrow(km$centers))), center = TRUE)
+  
+  data_w_clusters_centers <- bind_rows(data_w_clusters, centers)
+  ggplot(data_w_clusters_centers, aes(
+    x = UrbanPop, y = Assault,
+    color = cluster, size = ifelse(!is.na(center), 2, 1))
+  ) +
+    geom_point() +
+    scale_size(guide = 'none')
+}
+
+set.seed(1234)
+km <- kmeans(data, centers = 2, nstart = 5)
+
+plot_clusters_with_centers(data, km)
+
+```
+
+#### d. Perform PCA and get the first two principal component coordinates for all observations by
+
+Finally I perform a PCA and get the first two principal components for all observations. The first plot below shows the clusters defined by the first and second component. On the second chart we can see the the plots labeled with the name of the cities.
+
+```{r message=FALSE, warning=FALSE, echo=TRUE}
+
+# Plot PC1 and PC2 
+
+pca_result <- prcomp(data, scale = TRUE)
+first_two_pc <- as_tibble(pca_result$x[, 1:2])
+city <- rownames(pca_result$x)
+first_two_pc <- first_two_pc %>% 
+  mutate(clusters = factor(km$cluster),city = city)
+
+ggplot(first_two_pc, aes(x = PC1, y = PC2, color = clusters)) +
+  geom_point() + 
+  labs(title="Clusters First two principal components")
+
+ggplot(first_two_pc, aes(x = PC1, y = PC2, color = clusters)) +
+  geom_point() + geom_text(label = city, size = 2, hjust = -0.1) +
+  labs(title="First two principal components by cities")
+
+
+```
