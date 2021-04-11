@@ -1,0 +1,615 @@
+---
+title: "Data Science 2 - Assignment 3"
+author: "Attila Serfozo"
+date: '2021.04.11. '
+output: html_document
+---
+
+# Kaggle competition
+
+As part of a University kaggle competition, we are going to predict which articles are shared the most on social media in this project. The data comes from the website mashable.com from the begininng of 2015. It has 60 variables in the train dataset including the target variable 'is_popular' and 27,752 observations on social media posts.
+
+```{r set up environment, message=FALSE, warning=FALSE}
+
+# Set up environment ------------------------------------------------------
+
+# Edit your path and create an output folder for model outputs
+path <- "D:/Egyetem/CEU/Winter_Term/Data_Science_2/Assignments/Assignment3"
+setwd(path)
+
+# Load packages and data
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(pROC)
+library(caTools)
+library(keras)
+
+my_seed <- 20210408
+```
+
+## EDA and transformations
+
+First, let's have a look at the distribution of observations by variables. As we can see below there are several skewed variables with some extreme values like in keyword variables (start with "kw_") or number of some parameters in the social media post (start with "n_" or "num_").
+
+```{r import data and EDA, message=FALSE, warning=FALSE, fig.height=16,fig.width=12}
+# Import data
+data <- read_csv("https://raw.githubusercontent.com/ASerfozo/Data_Science_in_R/main/Task_4_Kaggle_Competition/Data/train.csv")
+data_test <- read_csv("https://raw.githubusercontent.com/ASerfozo/Data_Science_in_R/main/Task_4_Kaggle_Competition/Data/test.csv")
+
+# Quick look at the data
+# skimr::skim(data)
+
+# Create factors from "is popular"
+data <- mutate(data, is_popular = factor(is_popular, levels = 0:1, labels = c("NoPopular", "Popular")) )
+
+# Quick plotting of all numeric features
+p <- data %>%
+  keep(is.numeric) %>%
+  gather() %>%
+  ggplot(aes(value)) +
+  facet_wrap(~key, scales = "free", ncol = 6) +
+  geom_histogram(fill='cyan4', col="black", alpha=0.7)+
+  theme_bw()+
+  labs(x="Variable", y="Absolute frequency", title="Distribution of variables")
+p
+```
+
+I tried taking the log of these variables, first I took the log of the keyword variables then the other skewed variables, finally all of the skewed variables, but surprisingly non of the transformations improved the prediction of the models. So I decided to take it out from the analysis.
+
+```{r log transformations, message=FALSE, warning=FALSE}
+# There are several skewed variables -> try log transformations to improve accuracy?
+
+# Keyword variables
+# data <- data %>% mutate(
+#     logkw_avg_avg = ifelse(kw_avg_avg < 0 , 1, log(kw_avg_avg+1)),
+#     logkw_avg_max = ifelse(kw_avg_max < 0 , 1, log(kw_avg_max+1)),
+#     logkw_avg_min = ifelse(kw_avg_min < 0 , 1, log(kw_avg_min+1)),
+#     logkw_max_avg = ifelse(kw_max_avg < 0 , 1, log(kw_max_avg+1)),
+#     logkw_max_max = ifelse(kw_max_max < 0 , 1, log(kw_max_max+1)),
+#     logkw_max_min = ifelse(kw_max_min < 0 , 1, log(kw_max_min+1)),
+#     logkw_min_avg = ifelse(kw_min_avg < 0 , 1, log(kw_min_avg+1)),
+#     logkw_min_max = ifelse(kw_min_max < 0 , 1, log(kw_min_max+1)),
+#     logkw_min_min = ifelse(kw_min_min < 0 , 1, log(kw_min_min+1)),
+#     )
+# data <- data %>% dplyr::select(-c(kw_avg_avg,kw_avg_max,kw_avg_min,kw_max_avg,kw_max_max,kw_max_min,kw_min_avg,kw_min_max,kw_min_min))
+# 
+# Counting variables
+# data <- data %>% mutate(
+#     logn_non_stop_unique_tokens = ifelse(n_non_stop_unique_tokens < 0 , 1, log(n_non_stop_unique_tokens+1)),
+#     logn_non_stop_words = ifelse(n_non_stop_words < 0 , 1, log(n_non_stop_words)),
+#     logn_tokens_content = ifelse(n_tokens_content < 0 , 1, log(n_tokens_content+1)),
+#     logn_unique_tokens = ifelse(n_unique_tokens < 0 , 1, log(n_unique_tokens+1)),
+#     lognum_hrefs = ifelse(num_hrefs < 0 , 1, log(num_hrefs+1)),
+#     lognum_imgs = ifelse(num_imgs < 0 , 1, log(num_imgs+1)),
+#     lognum_self_hrefs = ifelse(num_self_hrefs < 0 , 1, log(num_self_hrefs+1)),
+#     lognum_videos = ifelse(num_videos < 0 , 1, log(num_videos+1)),
+#     logself_reference_avg_sharess = ifelse(self_reference_avg_sharess < 0 , 1, log(self_reference_avg_sharess+1)),
+#     logself_reference_min_shares = ifelse(self_reference_min_shares < 0 , 1, log(self_reference_min_shares+1)),
+#     logself_reference_max_shares = ifelse(self_reference_max_shares < 0 , 1, log(self_reference_max_shares+1)),
+#     )
+# data <- data %>% dplyr::select(-c(n_non_stop_unique_tokens,n_non_stop_words,n_tokens_content,n_unique_tokens,num_hrefs,num_imgs,num_self_hrefs,num_videos,self_reference_avg_sharess,self_reference_min_shares,self_reference_max_shares))
+
+```
+
+# Models
+
+For the modeling exercise I used 5-fold cross-validation and separated a validation set from the training set to select my best model based on that independent data.
+
+```{r cross-validation, message=FALSE, warning=FALSE}
+# 5-fold CV ---------------------------------------------------------------
+
+set.seed(my_seed)
+# Separate holdout set
+train_indices <- as.integer(createDataPartition(data$is_popular, p = 0.75, list = FALSE))
+data_train <- data[train_indices, ]
+data_valid <- data[-train_indices, ]
+
+# 5-fold CV
+train_control <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = TRUE,
+  verboseIter = FALSE
+)
+
+```
+
+### Linear models
+For a benchmark model I trained a linear model which already achieved a relatively good prediction power with a 0.6928 AUC on the validation set. To try different tuning options I also created a Ridge a Lasso and an Elastic Net model. The results of the models on the validation set can be found after the code snippet.
+
+
+```{r linear models, message=FALSE, warning=FALSE}
+# Models ------------------------------------------------------------------
+
+# Base model - linear
+
+# set.seed(my_seed)
+# linear_model <- train(
+#   is_popular ~ . -is_popular,
+#   data = data_train,
+#   method = "glm",
+#   trControl = train_control
+# )
+# saveRDS(linear_model, paste0(path,"/output/linear_model.rds"))
+linear_model <- readRDS(paste0(path,"/output/linear_model.rds"))
+#linear_model
+
+lin_roc <- roc(
+  predictor=predict(linear_model, data_valid, type='prob', decision.values=T)$Popular, 
+  response=data_valid$is_popular)
+# lin_roc
+
+
+# Ridge
+
+ridge_tune_grid <- expand.grid(
+  "alpha" = c(0),
+  "lambda" = seq(0.05, 0.5, by = 0.025)
+)
+
+# set.seed(my_seed)
+# ridge_fit <- train(
+#   is_popular ~ . -is_popular,
+#   data = data_train,
+#   method = "glmnet",
+#   metric = "ROC",
+#   preProcess = c("center", "scale"),
+#   tuneGrid = ridge_tune_grid,
+#   trControl = train_control
+# )
+# saveRDS(ridge_fit, paste0(path,"/output/ridge_fit.rds"))
+ridge_fit <- readRDS(paste0(path,"/output/ridge_fit.rds"))
+# ridge_fit
+
+ridge_roc <- roc(
+  predictor=predict(ridge_fit, data_valid, type='prob', decision.values=T)$Popular, 
+  response=data_valid$is_popular)
+# ridge_roc
+
+# LASSO
+
+tenpowers <- 10^seq(-1, -5, by = -1)
+
+lasso_tune_grid <- expand.grid(
+  "alpha" = c(1),
+  "lambda" = c(tenpowers, tenpowers / 2) 
+)
+
+# set.seed(my_seed)
+# lasso_fit <- train(
+#   is_popular ~ . -is_popular,
+#   data = data_train,
+#   method = "glmnet",
+#   metric = "ROC",
+#   preProcess = c("center", "scale"),
+#   tuneGrid = lasso_tune_grid,
+#   trControl = train_control
+# )
+# saveRDS(lasso_fit, paste0(path,"/output/lasso_fit.rds"))
+lasso_fit <- readRDS(paste0(path,"/output/lasso_fit.rds"))
+# lasso_fit
+
+lasso_roc <- roc(
+  predictor=predict(lasso_fit, data_valid, type='prob', decision.values=T)$Popular, 
+  response=data_valid$is_popular)
+# lasso_roc
+
+# Elastic Net
+
+enet_tune_grid <- expand.grid(
+  "alpha" = seq(0, 1, by = 0.1),
+  "lambda" = union(lasso_tune_grid[["lambda"]], ridge_tune_grid[["lambda"]])
+)
+
+# set.seed(my_seed)
+# enet_fit <- train(
+#   is_popular ~ . -is_popular,
+#   data = data_train,
+#   method = "glmnet",
+#   metric = "ROC",
+#   preProcess = c("center", "scale"),
+#   tuneGrid = enet_tune_grid,
+#   trControl = train_control
+# )
+# saveRDS(enet_fit, paste0(path,"/output/enet_fit.rds"))
+enet_fit <- readRDS(paste0(path,"/output/enet_fit.rds"))
+# enet_fit
+
+enet_roc <- roc(
+  predictor=predict(enet_fit, data_valid, type='prob', decision.values=T)$Popular, 
+  response=data_valid$is_popular)
+# enet_roc
+
+```
+
+### Lienar model results
+
+The linear model results on the validation set can be found below, we can see that none of the trained Ridge, Lasso or Elastic Net models could provide better prediction on the validation set than the simple linear model.
+
+```{r linear model results, message=FALSE, warning=FALSE}
+models <-
+  list("Linear"= round(max(lin_roc$auc),4),
+       "Ridge" = round(max(ridge_roc$auc),4),
+       "LASSO" = round(max(lasso_roc$auc),4),
+       "Elastic Net" = round(max(enet_roc$auc),4))
+
+result_1 <- unlist(models) %>% as.data.frame() %>%
+  rename("CV AUC" = ".")
+# result_1
+
+knitr::kable(result_1, caption="Linear Models AUC on validation set") 
+```
+
+### Random Forest
+
+My next model is a random forest where I tried several tuning options on the mtry and and the min-node size parameter. The best tune parameter was the mtry of 2 and min-node size 50.
+
+```{r random forest, message=FALSE, warning=FALSE}
+# Random Forest
+
+rf_tune_grid <- expand.grid(.mtry = c(2,4,6,8,10),
+                            .splitrule = "gini",
+                            .min.node.size = c(5,25,40,50,75,100) )
+
+# set.seed(my_seed)
+# rf_model <- train(is_popular ~ .,
+#                   data = data_train,
+#                   method = "ranger",
+#                   metric = "ROC",
+#                   trControl = train_control,
+#                   tuneGrid= rf_tune_grid,
+#                   importance = "impurity")
+#saveRDS(rf_model, paste0(path,"/output/rf_model.rds"))
+rf_model <- readRDS(paste0(path,"/output/rf_model.rds"))
+# rf_model
+
+# Best tune parameter is mtry 2 and min node size 50
+# rf_model$bestTune
+plot(rf_model)
+
+rf_roc <- roc(
+  predictor=predict(rf_model, data_valid, type='prob', decision.values=T)$Popular, 
+  response=data_valid$is_popular)
+# rf_roc
+```
+
+### Gradient Boosting Machine
+
+My next model is a gradient boosting machine where I tried several options during tuning. In the end the best ROC was with 300 trees, 5 interaction depth, 0.05 shrinkage and 50 min node size.  
+
+```{r gradient boosting machine, message=FALSE, warning=FALSE, fig.height=6,fig.width=8}
+# Gradient Boosting Machine
+
+gbm_tune_grid <- expand.grid(interaction.depth=c(3,5,7),      
+                             n.trees=c(100,300,500),             
+                             shrinkage = c(0.01,0.05,0.1),
+                             n.minobsinnode = c(10,30,50,75) )
+
+# set.seed(my_seed)
+# gbm_model <- train(is_popular ~ .,
+#                    data = data_train, 
+#                    method = "gbm",
+#                    verbose = FALSE,
+#                    metric = "ROC",
+#                    trControl=train_control,
+#                    tuneGrid = gbm_tune_grid)
+#saveRDS(gbm_model, paste0(path,"/output/gbm_model.rds"))
+gbm_model <- readRDS(paste0(path,"/output/gbm_model.rds"))
+# gbm_model
+
+# Best tune parameter is 300 trees, 5 depth, 0.05 shrinkage and 50 min node size - 0.7179140
+# gbm_model$bestTune
+plot(gbm_model)
+
+gbm_roc <- roc(
+  predictor=predict(gbm_model, data_valid, type='prob', decision.values=T)$Popular, 
+  response=data_valid$is_popular)
+# gbm_roc
+```
+
+### XGBoost
+
+Finally I created an XGBoost with different number of trees, max tree depth, learning rate and column sampling. In the end the 350 number of trees with max depth of 5, 0.03 learning rate, 0.75 column sampling and 0.2 min child weight were the best tune parameters.
+
+```{r xgboost, message=FALSE, warning=FALSE, fig.height=6,fig.width=8}
+# XGBoost
+
+xgb_grid <- expand.grid(nrounds = c(100, 350, 500,750),   
+                        max_depth = c(3,5,7),      
+                        eta = c(0.03,0.05, 0.06),      
+                        gamma = c(0.01),    
+                        colsample_bytree = c(0.5,0.75), 
+                        subsample = c(0.75), 
+                        min_child_weight = c(0,0.2,0.5))   
+
+# set.seed(my_seed)
+# xgb_model <- train(
+#   is_popular ~ .,
+#   data = data_train,
+#   method = "xgbTree",
+#   metric = "ROC",
+#   tuneGrid = xgb_grid,
+#   trControl = train_control
+# )
+#saveRDS(xgb_model, paste0(path,"/output/xgb_model.rds"))
+xgb_model <- readRDS(paste0(path,"/output/xgb_model.rds"))
+# xgb_model
+
+# Best tune parameter is nr of trained trees 350, max depth of 5, learning rate 0.03, min child weight 0.2
+# xgb_model$bestTune
+plot(xgb_model)
+
+xgb_roc <- roc(
+  predictor=predict(xgb_model, data_valid, type='prob', decision.values=T)$Popular, 
+  response=data_valid$is_popular)
+# xgb_roc
+```
+
+### Results
+
+The results of the Random forest, Gradient boosting machine and XGBoost models can be found below on the validation set. Based on these results all models overperformed the results of the linear model and in the end the XGBoost model come up as the best model based on the validation set cross-validated AUC.
+
+```{r model results, message=FALSE, warning=FALSE}
+# Results -----------------------------------------------------------------
+
+models_2 <-
+  list("Linear"= round(max(lin_roc$auc),4),
+       "Random Forest"= round(max(rf_roc$auc),4),
+       "GBM" = round(max(gbm_roc$auc),4),
+       "XGBoost" = round(max(xgb_roc$auc),4))
+
+result_2 <- unlist(models_2) %>% as.data.frame() %>%
+  rename("CV AUC" = ".")
+# result_2
+
+knitr::kable(result_2, caption="Models AUC on validation set") 
+```
+
+### Create best model prediction on the test set.
+
+So with my best model I created my prediction on the test set to upload it to kaggle in the competition I am participating. Based on the received results the best model performed an accuracy of 0.71975 on the test set which is quite similar to the prediction on the validation set, so our model performs stable with a relatively good prediction.
+
+```{r best model test set prediction, message=FALSE, warning=FALSE}
+# Create test prediction --------------------------------------------------
+
+xgb_test_pred <- predict(xgb_model, data_test, type="prob")
+
+xgb_test_output <- data.frame(article_id = data_test$article_id, score = predict(xgb_model, data_test, type="prob")[2])
+xgb_test_output <- rename(xgb_test_output, score = Popular)
+#write_csv(xgb_test_output,paste0(path,"/output/xgb_test_prediction.csv"))                              
+
+```
+
+### Create prediction on the test set using best model trained on full training data.
+
+To achieve a better prediction in the kaggle competition, I also checked whether I can achieve a better performance using all the training dataset during the training of the best model. Surprisingly the model trained on the full training dataset could not achieve better results on the test set than the XGBoost which was created without the validation set. Probably if we are using all the available training data, the model is overfitting the data a little bit more resulting worse prediction on an independent dataset.
+
+```{r best model test set prediction with full train data, message=FALSE, warning=FALSE}
+# Train best model on the full train data ---------------------------------
+
+xgb_grid_full_data <- expand.grid(nrounds = c(350),   
+                        max_depth = c(5),      
+                        eta = c(0.03),      
+                        gamma = c(0.01),    
+                        colsample_bytree = c(0.75), 
+                        subsample = c(0.75), 
+                        min_child_weight = c(0.2))   
+
+# set.seed(my_seed)
+# xgb_model_full_data <- train(
+#   is_popular ~ .,
+#   data = data,
+#   method = "xgbTree",
+#   metric = "ROC",
+#   tuneGrid = xgb_grid_full_data,
+#   trControl = train_control
+# )
+#saveRDS(xgb_model_full_data, paste0(path,"/output/xgb_model_full_data.rds"))
+xgb_model_full_data <- readRDS(paste0(path,"/output/xgb_model_full_data.rds"))
+# xgb_model_full_data
+
+xgb_full_test_output <- data.frame(article_id = data_test$article_id, score = predict(xgb_model_full_data, data_test, type="prob")[2])
+xgb_full_test_output <- rename(xgb_full_test_output, score = Popular)
+# write_csv(xgb_full_test_output,paste0(path,"/output/xgb_full_test_prediction.csv"))
+
+```
+
+### Neural Network model
+
+Finally I am creating a neural network model to challenge the xgboost model performance. To plug the data into the neural net models I needed to normalize the data and reshape it to a matrix form.
+
+```{r neural network, message=FALSE, warning=FALSE}
+
+# Neural network ----------------------------------------------------------
+
+# Re-import data
+
+data <- read_csv("https://raw.githubusercontent.com/ASerfozo/Data_Science_in_R/main/Task_4_Kaggle_Competition/Data/train.csv")
+data_test <- read_csv("https://raw.githubusercontent.com/ASerfozo/Data_Science_in_R/main/Task_4_Kaggle_Competition/Data/test.csv")
+
+set.seed(my_seed)
+# Separate holdout set
+train_indices <- as.integer(createDataPartition(data$is_popular, p = 0.75, list = FALSE))
+data_train <- data[train_indices, ]
+data_valid <- data[-train_indices, ]
+
+# Normalize the data
+
+x_train <- select(data_train, -is_popular)
+x_valid <- select(data_valid, -is_popular)
+
+y_train <- to_categorical(data_train$is_popular)
+y_valid <- to_categorical(data_valid$is_popular)
+
+for (i in colnames(x_train)) {
+    col <-x_train[,c(i)]
+    col1 <- col + abs(min(col))
+    col2 <- col1/max(col1)
+    x_train[,c(i)] <- col2
+}
+
+for (i in colnames(x_valid)) {
+  col <-x_valid[,c(i)]
+  col1 <- col + abs(min(col))
+  col2 <- col1/max(col1)
+  x_valid[,c(i)] <- col2
+}
+x_test <- data_test
+for (i in colnames(x_test)) {
+  col <-x_test[,c(i)]
+  col1 <- col + abs(min(col))
+  col2 <- col1/max(col1)
+  x_test[,c(i)] <- col2
+}
+x_train <- as.matrix(x_train) 
+x_valid <- as.matrix(x_valid)
+x_test <- as.matrix(x_test)
+```
+
+I trained 3 neural network models, the first has 16 hidden layer nods, the second has 32 and the third model has an additional layer with 16 nods. The training history and the AUC results of the neural net models can be found below. In the end the neural net model with two layers 32 node in the first layer and 16 node in the second layer resulted the best AUC on the validation set.
+
+```{r neural network training, message=FALSE, warning=FALSE}
+
+
+# Model 1 base model
+
+nn_model_1 <- keras_model_sequential()
+nn_model_1 %>%
+  layer_dense(units = 16, activation = 'relu', input_shape = ncol(x_train)) %>%  
+  layer_dropout(rate = 0.3) %>%   
+  layer_dense(units = 2, activation = 'softmax')                           
+
+compile(
+  nn_model_1,
+  loss = 'binary_crossentropy',
+  optimizer = optimizer_rmsprop(),
+  metrics = c('accuracy')
+)
+
+# history_1 <- fit(
+#   nn_model_1, x_train, y_train,
+#   epochs = 30, batch_size = 128,
+#   validation_data = list(x_valid, y_valid)
+# )
+
+# save_model_hdf5(nn_model_1, paste0(path,"/output/nn_model_1.h5"))
+nn_model_1 <- load_model_hdf5(paste0(path,"/output/nn_model_1.h5"))
+# saveRDS(history_1, paste0(path,"/output/nn_model_1.rds"))
+history_1 <- readRDS(paste0(path,"/output/nn_model_1.rds"))
+# history_1
+
+nn_model_output <- predict_proba(nn_model_1,x_valid)[,2]
+nn_roc_1 <- pROC::roc(y_valid[,2],nn_model_output)
+# nn_roc_1
+
+plot(history_1) + labs(title = "Model 1 - base model with 16 nods in hidden layer")
+
+# NN model with increased node number in layer
+
+nn_model_2 <- keras_model_sequential()
+nn_model_2 %>%
+  layer_dense(units = 32, activation = 'relu', input_shape = ncol(x_train)) %>%  
+  layer_dropout(rate = 0.3) %>%   
+  layer_dense(units = 2, activation = 'softmax')                           
+
+compile(
+  nn_model_2,
+  loss = 'binary_crossentropy',
+  optimizer = optimizer_rmsprop(),
+  metrics = c('accuracy')
+)
+
+# history_2 <- fit(
+#   nn_model_2, x_train, y_train,
+#   epochs = 30, batch_size = 128,
+#   validation_data = list(x_valid, y_valid)
+# )
+
+# save_model_hdf5(nn_model_2, paste0(path,"/output/nn_model_2.h5"))
+nn_model_2 <- load_model_hdf5(paste0(path,"/output/nn_model_2.h5"))
+# saveRDS(history_2, paste0(path,"/output/nn_model_2.rds"))
+history_2 <- readRDS(paste0(path,"/output/nn_model_2.rds"))
+# history_2
+
+nn_model_output <- predict_proba(nn_model_2,x_valid)[,2]
+nn_roc_2 <- pROC::roc(y_valid[,2],nn_model_output)
+# nn_roc_2
+
+plot(history_2) + labs(title = "Model 2 - 32 nods in hidden layer")
+
+# NN model with one more layer
+
+nn_model_3 <- keras_model_sequential()
+nn_model_3 %>%
+  layer_dense(units = 32, activation = 'relu', input_shape = ncol(x_train)) %>%  
+  layer_dropout(rate = 0.3) %>% 
+  layer_dense(units = 16, activation = 'relu', input_shape = ncol(x_train)) %>%  
+  layer_dropout(rate = 0.3) %>% 
+  layer_dense(units = 2, activation = 'softmax')                           
+
+compile(
+  nn_model_3,
+  loss = 'binary_crossentropy',
+  optimizer = optimizer_rmsprop(),
+  metrics = c('accuracy')
+)
+
+# history_3 <- fit(
+#   nn_model_3, x_train, y_train,
+#   epochs = 30, batch_size = 128,
+#   validation_data = list(x_valid, y_valid)
+# )
+
+# save_model_hdf5(nn_model_3, paste0(path,"/output/nn_model_3.h5"))
+nn_model_3 <- load_model_hdf5(paste0(path,"/output/nn_model_3.h5"))
+# saveRDS(history_3, paste0(path,"/output/nn_model_3.rds"))
+history_3 <- readRDS(paste0(path,"/output/nn_model_3.rds"))
+# history_3
+
+nn_model_output <- predict_proba(nn_model_3,x_valid)[,2]
+nn_roc_3 <- pROC::roc(y_valid[,2],nn_model_output)
+# nn_roc_3
+
+plot(history_3) + labs(title = "Model 3 - add another layer")
+
+# Prediction on test set
+nn_model_output <- data.frame(article_id = data_test$article_id,score = predict_proba(nn_model_3,x_test)[,1])
+write_csv(nn_model_output,paste0(path,"/output/nn_model_prediction.csv"))
+
+models_3 <-
+  list("NN model 1"= round(max(nn_roc_1$auc),4),
+       "NN model 2"= round(max(nn_roc_2$auc),4),
+       "NN model 3" = round(max(nn_roc_3$auc),4))
+
+result_3 <- unlist(models_3) %>% as.data.frame() %>%
+  rename("AUC" = ".")
+# result_3
+
+knitr::kable(result_3, caption="Neural Net Models AUC on validation set") 
+```
+
+# Final results
+
+The final model AUCs on the validation set can be found, we can see that the neural network model could not overcome the XGBoost accuracy, which is my final model selection for this exercise.
+
+```{r, message=FALSE, warning=FALSE}
+models_4 <-
+  list("Linear"= round(max(lin_roc$auc),4),
+       "Random Forest"= round(max(rf_roc$auc),4),
+       "GBM" = round(max(gbm_roc$auc),4),
+       "XGBoost" = round(max(xgb_roc$auc),4),
+       "Neural Net" = round(max(nn_roc_3$auc),4))
+
+result_4 <- unlist(models_4) %>% as.data.frame() %>%
+  rename("AUC" = ".")
+# result_4
+
+knitr::kable(result_4, caption="Final Models AUC on validation set") 
+
+
+```
+
+
