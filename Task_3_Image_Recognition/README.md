@@ -6,6 +6,6 @@ In the folder there are 3 subfolders.
 - In the docs folder the report is located in html.
 - In the output folder the outputs of the models are located.
 
-The project includes the image classification exercise of the Fashion MNIST data including fashion items. In the project we are using neural network models.
+The project includes the image classification exercise of the Fashion MNIST data including fashion items. In the project we are using neural network models with keras.
 
 Link to github repo of project: https://github.com/ASerfozo/Data_Science_in_R/tree/main/Task_3_Image_Recognition

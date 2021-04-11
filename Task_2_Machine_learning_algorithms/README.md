@@ -7,7 +7,7 @@ In the folder there are 3 subfolders.
 - In the output folder the outputs of the models are located.
 
 The project includes
-- Tree ensemble models building and tuning
+- Tree ensemble models building and tuning of Random Forest, Gradient Boosting Machine and XGBoost using caret and h2o
 - Variable importance profiles
 - Stacking
 
